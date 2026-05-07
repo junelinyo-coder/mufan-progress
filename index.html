@@ -839,20 +839,25 @@ function filterTasks(filter, btn) {
 }
 
 // ──────────────────────────────────────────────
-// GOOGLE SHEETS SYNC
+// GOOGLE SHEETS SYNC（雙向）
 // ──────────────────────────────────────────────
 function loadConfig() {
   const url = localStorage.getItem('script_url') || '';
   if (document.getElementById('cfg-script-url')) document.getElementById('cfg-script-url').value = url;
   if (document.getElementById('modal-script-url')) document.getElementById('modal-script-url').value = url;
-  updateSyncStatus(url ? '已設定 Apps Script URL，點「同步」上傳資料' : '尚未連接 Google Sheets，請點右上角「設定」填入試算表 ID');
+  if (url) {
+    updateSyncStatus('⏳ 載入中，正在從 Google Sheets 讀取最新資料...');
+    pullFromSheet();
+  } else {
+    updateSyncStatus('尚未連接 Google Sheets，請點右上角「設定」填入 Apps Script URL');
+  }
 }
 
 function saveConfig() {
   const url = document.getElementById('cfg-script-url').value.trim();
   localStorage.setItem('script_url', url);
-  updateSyncStatus('設定已儲存 ✓');
   showConfigStatus('ok', '設定已儲存！');
+  pullFromSheet();
 }
 
 function saveConfigModal() {
@@ -860,7 +865,8 @@ function saveConfigModal() {
   localStorage.setItem('script_url', url);
   if (document.getElementById('cfg-script-url')) document.getElementById('cfg-script-url').value = url;
   document.getElementById('cfg-modal').style.display = 'none';
-  updateSyncStatus('設定已儲存，可以點「同步」上傳資料了');
+  updateSyncStatus('設定已儲存，正在讀取資料...');
+  pullFromSheet();
 }
 
 function openConfig() {
@@ -881,21 +887,64 @@ function showConfigStatus(type, msg) {
   setTimeout(() => { el.style.display = 'none'; }, 3000);
 }
 
+// ── 從 Google Sheets 讀取所有人資料 ──
+async function pullFromSheet() {
+  const url = localStorage.getItem('script_url');
+  if (!url) return;
+  try {
+    const res = await fetch(url + '?action=pull', { method: 'GET' });
+    const json = await res.json();
+    if (json.success && json.data) {
+      // 合併資料，保留本地未同步的新任務
+      Object.keys(json.data).forEach(memberId => {
+        allTasks[memberId] = json.data[memberId] || [];
+      });
+      updateSyncStatus('✅ 已從 Google Sheets 讀取最新資料 — ' + new Date().toLocaleTimeString('zh-TW'));
+      // 重新渲染當前視圖
+      const member = MEMBERS.find(m => m.id === currentMemberId);
+      if (member) {
+        if (member.isBoss) renderBossView(member);
+        else renderMemberView(member);
+      }
+    } else {
+      updateSyncStatus('⚠️ 讀取成功但無資料，請先按「☁️ 同步」上傳一次');
+    }
+  } catch(e) {
+    updateSyncStatus('⚠️ 無法讀取 Sheets，顯示本地資料（請確認 Apps Script 已更新）');
+  }
+}
+
+// ── 推送到 Google Sheets ──
 async function syncToSheet() {
   const url = localStorage.getItem('script_url');
   if (!url) { updateSyncStatus('尚未設定 Apps Script URL'); return; }
   updateSyncStatus('⏳ 同步中...');
   try {
     const payload = { action: 'sync', data: allTasks, timestamp: new Date().toISOString() };
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
-      mode: 'no-cors',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
-    updateSyncStatus('✅ 已同步至 Google Sheets — ' + new Date().toLocaleTimeString('zh-TW'));
+    const json = await res.json();
+    if (json.success) {
+      updateSyncStatus('✅ 已同步至 Google Sheets — ' + new Date().toLocaleTimeString('zh-TW'));
+    } else {
+      updateSyncStatus('❌ 同步失敗：' + (json.error || '未知錯誤'));
+    }
   } catch(e) {
-    updateSyncStatus('❌ 同步失敗，請確認 Apps Script URL 設定正確');
+    // fallback no-cors
+    try {
+      await fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'sync', data: allTasks })
+      });
+      updateSyncStatus('✅ 已同步至 Google Sheets — ' + new Date().toLocaleTimeString('zh-TW'));
+    } catch(e2) {
+      updateSyncStatus('❌ 同步失敗，請確認網路連線');
+    }
   }
 }
 
